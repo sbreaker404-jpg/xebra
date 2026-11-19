@@ -12,6 +12,7 @@ import {
   APPROVAL_TTL_LEDGERS,
   type StellarBuildRpc,
   StellarSimulationError,
+  XebraError,
   buildStellarBridge,
 } from "./stellar.js";
 
@@ -122,5 +123,109 @@ describe("buildStellarBridge", () => {
     ).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(Error);
     expect(err).not.toBeInstanceOf(StellarSimulationError);
+  });
+
+  it("rejects non-positive amount with invalid_amount", async () => {
+    for (const badAmount of [0n, -1n]) {
+      const err = await buildStellarBridge(
+        fakeRpc(),
+        { wrapperContractId: WRAPPER, networkPassphrase: Networks.PUBLIC },
+        { ...INPUT, amount: badAmount },
+      ).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(XebraError);
+      expect(err).toMatchObject({ code: "invalid_amount", field: "amount" });
+      expect((err as Error).message).toContain("amount");
+    }
+  });
+
+  it("rejects ttlSeconds <= 0 or > 3600 with invalid_request", async () => {
+    for (const badTtl of [0, -10, 3601, 7200]) {
+      const err = await buildStellarBridge(
+        fakeRpc(),
+        { wrapperContractId: WRAPPER, networkPassphrase: Networks.PUBLIC },
+        { ...INPUT, ttlSeconds: badTtl },
+      ).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(XebraError);
+      expect(err).toMatchObject({ code: "invalid_request", field: "ttlSeconds" });
+      expect((err as Error).message).toContain("ttlSeconds");
+    }
+  });
+
+  it("rejects mintRecipient when not 32 bytes", async () => {
+    for (const badRecipient of [new Uint8Array(0), new Uint8Array(31), new Uint8Array(33)]) {
+      const err = await buildStellarBridge(
+        fakeRpc(),
+        { wrapperContractId: WRAPPER, networkPassphrase: Networks.PUBLIC },
+        { ...INPUT, mintRecipient: badRecipient },
+      ).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(XebraError);
+      expect(err).toMatchObject({ code: "invalid_request", field: "mintRecipient" });
+      expect((err as Error).message).toContain("mintRecipient");
+    }
+  });
+
+  it("rejects recipientOwner when defined and not 32 bytes", async () => {
+    for (const badOwner of [new Uint8Array(16), new Uint8Array(33)]) {
+      const err = await buildStellarBridge(
+        fakeRpc(),
+        { wrapperContractId: WRAPPER, networkPassphrase: Networks.PUBLIC },
+        { ...INPUT, recipientOwner: badOwner },
+      ).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(XebraError);
+      expect(err).toMatchObject({ code: "invalid_request", field: "recipientOwner" });
+      expect((err as Error).message).toContain("recipientOwner");
+    }
+  });
+
+  it("accepts recipientOwner when null or exactly 32 bytes", async () => {
+    const rpc = fakeRpc();
+    await expect(
+      buildStellarBridge(
+        rpc,
+        { wrapperContractId: WRAPPER, networkPassphrase: Networks.PUBLIC },
+        { ...INPUT, recipientOwner: null },
+      ),
+    ).resolves.toBeDefined();
+    await expect(
+      buildStellarBridge(
+        rpc,
+        { wrapperContractId: WRAPPER, networkPassphrase: Networks.PUBLIC },
+        { ...INPUT, recipientOwner: new Uint8Array(32) },
+      ),
+    ).resolves.toBeDefined();
+  });
+
+  it("wraps unfunded account error as XebraError with account_not_found", async () => {
+    const rpc = fakeRpc({
+      getAccount: async () => {
+        throw new Error("Account not found");
+      },
+    });
+    const err = await buildStellarBridge(
+      rpc,
+      { wrapperContractId: WRAPPER, networkPassphrase: Networks.PUBLIC },
+      INPUT,
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(XebraError);
+    expect(err).toMatchObject({
+      code: "account_not_found",
+      message: "This Stellar account does not exist yet. Fund it with XLM first.",
+    });
+  });
+
+  it("passes other getAccount errors through untouched", async () => {
+    const rpc = fakeRpc({
+      getAccount: async () => {
+        throw new Error("connection timeout");
+      },
+    });
+    const err = await buildStellarBridge(
+      rpc,
+      { wrapperContractId: WRAPPER, networkPassphrase: Networks.PUBLIC },
+      INPUT,
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(XebraError);
+    expect((err as Error).message).toBe("connection timeout");
   });
 });

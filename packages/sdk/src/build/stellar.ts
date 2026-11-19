@@ -137,6 +137,25 @@ export class StellarSimulationError extends Error {
   }
 }
 
+/**
+ * An error rejected by the builder before submission, carrying an API-style code.
+ */
+export class XebraError extends Error {
+  readonly code: string;
+  readonly field?: string;
+
+  constructor(code: string, message: string, field?: string) {
+    super(message);
+    this.name = "XebraError";
+    this.code = code;
+    if (field !== undefined) {
+      this.field = field;
+    }
+  }
+}
+
+export { XebraError as StellarBuildError };
+
 /** The three Soroban RPC calls a build makes; `rpc.Server` satisfies it. */
 export interface StellarBuildRpc {
   getAccount(address: string): Promise<Account>;
@@ -162,8 +181,36 @@ export async function buildStellarBridge(
   p: StellarBridgeInput,
   now: number = Date.now(),
 ): Promise<TransferStep> {
+  if (p.amount <= 0n) {
+    throw new XebraError("invalid_amount", "amount must be greater than zero", "amount");
+  }
+  if (p.ttlSeconds <= 0 || p.ttlSeconds > 3600) {
+    throw new XebraError("invalid_request", "ttlSeconds must be between 1 and 3600", "ttlSeconds");
+  }
+  if (p.mintRecipient.length !== 32) {
+    throw new XebraError("invalid_request", "mintRecipient must be 32 bytes", "mintRecipient");
+  }
+  if (p.recipientOwner && p.recipientOwner.length !== 32) {
+    throw new XebraError("invalid_request", "recipientOwner must be 32 bytes", "recipientOwner");
+  }
+
   const contract = new Contract(cfg.wrapperContractId);
-  const account = await server.getAccount(p.user);
+  let account: Account;
+  try {
+    account = await server.getAccount(p.user);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const status =
+      (err as { status?: number })?.status ??
+      (err as { response?: { status?: number } })?.response?.status;
+    if (/account not found/i.test(message) || status === 404) {
+      throw new XebraError(
+        "account_not_found",
+        "This Stellar account does not exist yet. Fund it with XLM first.",
+      );
+    }
+    throw err;
+  }
   const deadline = BigInt(Math.floor(now / 1000) + p.ttlSeconds);
 
   // The ledger at which the one-shot allowance to Circle's TokenMessenger expires, sent as
