@@ -95,18 +95,41 @@ describe("buildStellarBridge", () => {
   });
 
   it("lets a simulation failure through untouched, so nobody is asked to sign it", async () => {
+    const original = new Error("HostError: Error(Contract, #19)");
     const rpc = fakeRpc({
       prepareTransaction: async () => {
-        throw new Error("HostError: Error(Contract, #19)");
+        throw original;
       },
     });
-    await expect(
-      buildStellarBridge(
-        rpc,
-        { wrapperContractId: WRAPPER, networkPassphrase: Networks.PUBLIC },
-        INPUT,
-      ),
-    ).rejects.toThrow(StellarSimulationError);
+    const err = await buildStellarBridge(
+      rpc,
+      { wrapperContractId: WRAPPER, networkPassphrase: Networks.PUBLIC },
+      INPUT,
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StellarSimulationError);
+    if (!(err instanceof StellarSimulationError)) throw new Error("not a StellarSimulationError");
+    expect(err.contractCode).toBe(19);
+    expect(err.contractError).toBe("WrapperFeeAboveUserCap");
+    expect(err.cause).toBe(original);
+  });
+
+  it("handles a simulation error without a contract code", async () => {
+    const original = new Error("simulation failed: out of gas");
+    const rpc = fakeRpc({
+      prepareTransaction: async () => {
+        throw original;
+      },
+    });
+    const err = await buildStellarBridge(
+      rpc,
+      { wrapperContractId: WRAPPER, networkPassphrase: Networks.PUBLIC },
+      INPUT,
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StellarSimulationError);
+    if (!(err instanceof StellarSimulationError)) throw new Error("not a StellarSimulationError");
+    expect(err.contractCode).toBeUndefined();
+    expect(err.contractError).toBeUndefined();
+    expect(err.cause).toBe(original);
   });
 
   it("does not call an unreachable RPC a rejection", async () => {
