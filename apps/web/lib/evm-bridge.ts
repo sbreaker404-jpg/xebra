@@ -218,11 +218,10 @@ export async function submitEvmBridge(req: EvmBridgeRequest): Promise<EvmBridgeR
   };
   // Who takes the USDC and is called: the wrapper, or Circle's messenger.
   const target = evmBurnTarget(burnInput);
-  const encodeBurn = (deadline: bigint) => evmBurnCall(burnInput, deadline).data;
-
   // Built first: an argument the encoder refuses must fail before any wallet prompt. The deadline
-  // is set for real just before the burn, after any approval has confirmed.
-  let burn = encodeBurn(0n);
+  // is not known yet, so only it goes unchecked here; it is set, and checked against the chain's
+  // clock, just before the burn, after any approval has confirmed.
+  let burn = evmBurnCall(burnInput, 0n, { checkDeadline: false }).data;
 
   step("switching");
   await ensureChain(provider, source);
@@ -294,7 +293,12 @@ export async function submitEvmBridge(req: EvmBridgeRequest): Promise<EvmBridgeR
     }
   }
 
-  if (via) burn = encodeBurn((await readBlockTimestamp(provider)) + WRAPPER_DEADLINE_SECS);
+  if (via) {
+    // The wrapper judges the deadline by the chain's clock, so the check uses it too, not this
+    // machine's.
+    const chainNow = await readBlockTimestamp(provider);
+    burn = evmBurnCall(burnInput, chainNow + WRAPPER_DEADLINE_SECS, { now: chainNow }).data;
+  }
 
   // A burn that would revert is found here, as the sender, instead of in a wallet warning or,
   // worse, on chain after gas is spent. Through the wrapper this runs every one of its checks.

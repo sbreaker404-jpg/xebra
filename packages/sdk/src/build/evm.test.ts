@@ -6,7 +6,8 @@ import {
 } from "@xebra/cctp-evm";
 import { describe, expect, it } from "vitest";
 import { EVM_CHAINS } from "../core/chains/evm.js";
-import { buildEvmBridge, evmBurnCall } from "./evm.js";
+import { XebraError } from "../errors.js";
+import { EvmBuildError, buildEvmBridge, evmBurnCall } from "./evm.js";
 
 const base = EVM_CHAINS.base;
 const RECIPIENT = "0x1111111111111111111111111111111111111111";
@@ -94,17 +95,17 @@ describe("buildEvmBridge", () => {
     it("accepts a valid deadline within the next hour", () => {
       const now = 1_000_000;
       const deadline = BigInt(now + 1800);
-      expect(() => evmBurnCall({ ...INPUT, via }, deadline, now)).not.toThrow();
+      expect(() => evmBurnCall({ ...INPUT, via }, deadline, { now })).not.toThrow();
       const steps = buildEvmBridge({ ...INPUT, via, allowance: INPUT.amount, deadline, now });
       expect(steps[0]?.expiresAt).toBe(new Date(Number(deadline) * 1000).toISOString());
     });
 
     it("rejects a deadline in the past or at now", () => {
       const now = 1_000_000;
-      expect(() => evmBurnCall({ ...INPUT, via }, BigInt(now), now)).toThrow(
+      expect(() => evmBurnCall({ ...INPUT, via }, BigInt(now), { now })).toThrow(
         "deadline must be in seconds, between now and one hour from now",
       );
-      expect(() => evmBurnCall({ ...INPUT, via }, BigInt(now - 1), now)).toThrow(
+      expect(() => evmBurnCall({ ...INPUT, via }, BigInt(now - 1), { now })).toThrow(
         "deadline must be in seconds, between now and one hour from now",
       );
       expect(() =>
@@ -120,7 +121,7 @@ describe("buildEvmBridge", () => {
     it("rejects a deadline more than one hour ahead", () => {
       const now = 1_000_000;
       const deadline = BigInt(now + 3601);
-      expect(() => evmBurnCall({ ...INPUT, via }, deadline, now)).toThrow(
+      expect(() => evmBurnCall({ ...INPUT, via }, deadline, { now })).toThrow(
         "deadline must be in seconds, between now and one hour from now",
       );
       expect(() =>
@@ -136,7 +137,7 @@ describe("buildEvmBridge", () => {
     it("rejects a deadline passed in milliseconds", () => {
       const now = 1_000_000;
       const deadline = BigInt(now * 1000);
-      expect(() => evmBurnCall({ ...INPUT, via }, deadline, now)).toThrow(
+      expect(() => evmBurnCall({ ...INPUT, via }, deadline, { now })).toThrow(
         "deadline must be in seconds, between now and one hour from now",
       );
       expect(() =>
@@ -147,6 +148,55 @@ describe("buildEvmBridge", () => {
           message: "deadline must be in seconds, between now and one hour from now",
         }),
       );
+    });
+
+    it("throws an EvmBuildError, a XebraError naming the deadline field", () => {
+      const now = 1_000_000;
+      let caught: unknown;
+      try {
+        evmBurnCall({ ...INPUT, via }, BigInt(now - 1), { now });
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(EvmBuildError);
+      expect(caught).toBeInstanceOf(XebraError);
+      expect(caught).toMatchObject({
+        code: "invalid_request",
+        field: "deadline",
+        retryable: false,
+      });
+    });
+
+    it("takes the chain's timestamp as now, not this machine's clock", () => {
+      // A chain block far from Date.now(): the deadline is judged against the chain.
+      const chainNow = 1_800_000_000n;
+      expect(() =>
+        evmBurnCall({ ...INPUT, via }, chainNow + 600n, { now: chainNow }),
+      ).not.toThrow();
+      expect(() =>
+        evmBurnCall({ ...INPUT, via }, chainNow + 3600n, { now: chainNow }),
+      ).not.toThrow();
+      expect(() => evmBurnCall({ ...INPUT, via }, chainNow + 3601n, { now: chainNow })).toThrow(
+        EvmBuildError,
+      );
+    });
+
+    it("defaults now to this machine's clock", () => {
+      const current = BigInt(Math.floor(Date.now() / 1000));
+      expect(() => evmBurnCall({ ...INPUT, via }, current + 600n)).not.toThrow();
+      expect(() => evmBurnCall({ ...INPUT, via }, current - 1n)).toThrow(EvmBuildError);
+    });
+
+    it("skips only the deadline check for a dry-run encode", () => {
+      expect(() => evmBurnCall({ ...INPUT, via }, 0n, { checkDeadline: false })).not.toThrow();
+      // Every other argument is still checked.
+      expect(() =>
+        evmBurnCall({ ...INPUT, via, maxFee: INPUT.amount }, 0n, { checkDeadline: false }),
+      ).toThrow(/maxFee/);
+    });
+
+    it("never checks the deadline straight to Circle", () => {
+      expect(() => evmBurnCall({ ...INPUT, via: null }, 0n, { now: 1_000_000 })).not.toThrow();
     });
   });
 });

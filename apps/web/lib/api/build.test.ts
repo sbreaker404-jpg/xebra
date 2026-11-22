@@ -39,7 +39,7 @@ import {
 } from "./fakes";
 import { createService } from "./service";
 
-function svc(over: Partial<BuildDeps> = {}, top: Partial<Deps> = {}) {
+function svc(over: Partial<BuildDeps> = {}, top: Partial<Deps> = {}, now?: () => number) {
   return createService(
     deps({
       build: buildDeps(over),
@@ -47,6 +47,7 @@ function svc(over: Partial<BuildDeps> = {}, top: Partial<Deps> = {}) {
       evmRoutes: { arcSendsTo: ["base", "solana"], arcReceivesFrom: [] },
       ...top,
     }),
+    now,
   );
 }
 
@@ -434,6 +435,32 @@ describe("buildTransfer: what gets signed", () => {
     // Inside the hour the contract allows, with room for the approval to confirm first.
     expect(req.deadline).toBeGreaterThan(BigInt(before));
     expect(req.deadline).toBeLessThanOrEqual(BigInt(before + 3_600));
+  });
+
+  it("checks the wrapper deadline against the service's clock, not the machine's", async () => {
+    const ARC_WRAPPER = "0x11b30470DAE40B2Fc27b7AA90dc58e6B4fE9f4c3";
+    // Hours away from Date.now(): the deadline is set and checked from this clock alone.
+    const clockMs = Date.now() + 5 * 3_600_000;
+    const s = svc(
+      { evmWrapperOn: true },
+      {
+        evmWrapperAddress: (chain) => (chain.id === "arc" ? ARC_WRAPPER : null),
+        evmWrapperSettings: async () => WRAPPER_SETTINGS,
+      },
+      () => clockMs,
+    );
+    const { steps } = await s.buildTransfer({
+      from: "arc",
+      to: "base",
+      amount: 25_000_000n,
+      sender: EVM_SENDER,
+      recipient: RECIPIENT,
+    });
+    const burn = steps.find((step) => step.id === "burn");
+    if (burn?.tx.kind !== "evm") throw new Error("no EVM burn");
+    const call = decodeFunctionData({ abi: xebraWrapperAbi, data: burn.tx.data as `0x${string}` });
+    const req = (call.args as readonly [{ deadline: bigint }])[0];
+    expect(req.deadline).toBe(BigInt(Math.floor(clockMs / 1000) + 1_800));
   });
 
   it("refuses to price a wrapper send when the wrapper cannot be read", async () => {

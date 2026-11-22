@@ -161,6 +161,43 @@ describe("submitEvmBridge through Xebra's wrapper", () => {
     expect(req.deadline).toBe(CHAIN_NOW + 600n);
   });
 
+  it.each([
+    ["two hours ahead of", 2],
+    ["two hours behind", -2],
+  ])("sends when this computer's clock is %s the chain's", async (_, hours) => {
+    vi.setSystemTime(Number(CHAIN_NOW) * 1000 + hours * 3_600_000);
+    const c = chain({ chainId: arc.chainId });
+    const result = await submitEvmBridge(
+      request(c, {
+        source: arc,
+        destination: base,
+        maxFee: 54_099n,
+        via: { address: WRAPPER, maxWrapperFee: 300_000n },
+      }),
+    );
+    expect(result).toEqual({ txHash: BURN_HASH, approvalTxHash: APPROVAL_HASH });
+    const { args } = decodeFunctionData({
+      abi: xebraWrapperAbi,
+      data: c.sent[1]?.data as `0x${string}`,
+    });
+    expect((args as unknown as [{ deadline: bigint }])[0].deadline).toBe(CHAIN_NOW + 600n);
+  });
+
+  it("refuses an argument the wrapper would revert before touching the wallet", async () => {
+    const c = chain({ chainId: arc.chainId });
+    await expect(
+      submitEvmBridge(
+        request(c, {
+          source: arc,
+          destination: base,
+          maxFee: 5_000_000n,
+          via: { address: WRAPPER, maxWrapperFee: 300_000n },
+        }),
+      ),
+    ).rejects.toThrow(/maxFee/);
+    expect(c.calls).toHaveLength(0);
+  });
+
   it("simulates the wrapper's bridge before asking for the burn", async () => {
     const c = chain({
       chainId: arc.chainId,
